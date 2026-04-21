@@ -36,44 +36,74 @@ interface OpenEditor {
   isActive: boolean;
 }
 
-// Read bridge config from ~/.pi/vscode-bridge.json
-function getBridgeConfig(): BridgeConfig | null {
+// Read bridge configs from ~/.pi/vscode-bridge.json
+// Supports both single object (legacy) and array format (multi-window)
+function getBridgeConfigs(): BridgeConfig[] {
   const bridgeFile = join(homedir(), ".pi", "vscode-bridge.json");
-  if (!existsSync(bridgeFile)) return null;
+  if (!existsSync(bridgeFile)) return [];
   
   try {
     const content = readFileSync(bridgeFile, "utf8");
-    const config = JSON.parse(content) as BridgeConfig;
+    const parsed = JSON.parse(content);
+    const configs: BridgeConfig[] = Array.isArray(parsed) ? parsed : [parsed];
     
-    // Check if config is fresh (within last 24 hours)
-    if (Date.now() - config.timestamp > 24 * 60 * 60 * 1000) {
-      return null;
-    }
-    
-    return config;
-  } catch {
-    return null;
-  }
-}
-
-// Call VS Code bridge to get open editors
-async function getOpenEditors(): Promise<OpenEditor[]> {
-  const config = getBridgeConfig();
-  if (!config) return [];
-
-  try {
-    const response = await fetch(`${config.url}/open-editors`, {
-      method: "GET",
-      headers: {
-        "X-Token": config.token,
-      },
-    });
-
-    if (!response.ok) return [];
-    return (await response.json()) as OpenEditor[];
+    // Filter out stale entries (older than 24 hours)
+    const now = Date.now();
+    return configs.filter(c => now - c.timestamp < 24 * 60 * 60 * 1000);
   } catch {
     return [];
   }
+}
+
+// Get first available bridge config (for backward compatibility)
+function getBridgeConfig(): BridgeConfig | null {
+  return getBridgeConfigs()[0] ?? null;
+}
+
+// Call VS Code bridge to get open editors from ALL windows
+async function getOpenEditors(): Promise<OpenEditor[]> {
+  const configs = getBridgeConfigs();
+  if (configs.length === 0) return [];
+
+  const seen = new Map<string, OpenEditor>();
+
+  // Query all windows in parallel
+  const results = await Promise.allSettled(
+    configs.map(async (config) => {
+      try {
+        const response = await fetch(`${config.url}/open-editors`, {
+          method: "GET",
+          headers: {
+            "X-Token": config.token,
+          },
+          signal: AbortSignal.timeout(3000),
+        });
+
+        if (!response.ok) return [];
+        return (await response.json()) as OpenEditor[];
+      } catch {
+        return [];
+      }
+    })
+  );
+
+  // Merge results, dedup by filePath
+  for (const result of results) {
+    if (result.status !== "fulfilled") continue;
+    for (const editor of result.value) {
+      const key = editor.filePath;
+      if (!seen.has(key)) {
+        seen.set(key, editor);
+      } else {
+        // Merge: keep isActive/isDirty if true in any window
+        const existing = seen.get(key)!;
+        if (editor.isActive) existing.isActive = true;
+        if (editor.isDirty) existing.isDirty = true;
+      }
+    }
+  }
+
+  return [...seen.values()];
 }
 
 // Token delimiters for @ prefix detection
