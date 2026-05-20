@@ -18,7 +18,8 @@ import type {
   TUI,
   EditorTheme,
 } from "@mariozechner/pi-tui";
-import { relative, basename, join } from "node:path";
+import { relative, basename, join, isAbsolute } from "node:path";
+import * as fs from "node:fs";
 import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 
@@ -319,6 +320,16 @@ class VscodeFilesEditor extends CustomEditor {
   }
 }
 
+// Store before-snapshots for edit tool interception
+const diffSessions = new Map<string, { beforePath: string; filePath: string }>();
+const diffDir = join(homedir(), ".pi", "diff-cache");
+
+function ensureDiffDir() {
+  if (!fs.existsSync(diffDir)) {
+    fs.mkdirSync(diffDir, { recursive: true });
+  }
+}
+
 export default function (pi: ExtensionAPI) {
   let bridgeAvailable = false;
 
@@ -399,5 +410,156 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify("Bridge file exists but connection failed. Is VS Code running?", "warning");
       }
     },
+  });
+
+  // Helper: call VS Code bridge to show diff and wait for accept/reject
+  async function showDiffAndWait(
+    config: BridgeConfig,
+    file1: string,
+    file2: string,
+    timeout: number = 300
+  ): Promise<{ accepted: boolean; timedOut: boolean } | null> {
+    try {
+      const response = await fetch(`${config.url}/diff-and-wait`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Token": config.token,
+        },
+        body: JSON.stringify({ file1, file2, timeout }),
+        signal: AbortSignal.timeout((timeout + 10) * 1000),
+      });
+
+      if (!response.ok) return null;
+      return await response.json();
+    } catch {
+      return null;
+    }
+  }
+
+  // Register a command to show diff in VS Code and wait for accept/reject
+  pi.registerCommand("vscode-diff", {
+    description: "Open diff in VS Code and wait for accept/reject. Usage: /vscode-diff <file1> <file2>",
+    handler: async (args, ctx) => {
+      const config = getBridgeConfig();
+      if (!config) {
+        ctx.ui.notify("VS Code bridge not available. Install pi-vscode-lite extension.", "error");
+        return;
+      }
+
+      // Parse arguments - support both space-separated and quoted paths
+      const parts = args.split(",").map((s: string) => s.trim().replace(/^["']|["']$/g, ""));
+      let file1: string | undefined;
+      let file2: string | undefined;
+
+      if (parts.length === 2) {
+        file1 = parts[0];
+        file2 = parts[1];
+      } else {
+        // Try space-separated (split on last space that starts a valid path)
+        const words = args.split(/\s+/);
+        if (words.length >= 2) {
+          file1 = words.slice(0, -1).join(" ").replace(/^["']|["']$/g, "");
+          file2 = words[words.length - 1].replace(/^["']|["']$/g, "");
+        }
+      }
+
+      if (!file1 || !file2) {
+        ctx.ui.notify("Usage: /vscode-diff <file1> <file2> - provide two file paths", "error");
+        return;
+      }
+
+      // Resolve relative to cwd
+      if (!isAbsolute(file1)) file1 = join(ctx.cwd, file1);
+      if (!isAbsolute(file2)) file2 = join(ctx.cwd, file2);
+
+      // Check files exist
+      if (!existsSync(file1)) {
+        ctx.ui.notify(`File not found: ${file1}`, "error");
+        return;
+      }
+      if (!existsSync(file2)) {
+        ctx.ui.notify(`File not found: ${file2}`, "error");
+        return;
+      }
+
+      ctx.ui.notify("Opening diff in VS Code...", "info");
+
+      const result = await showDiffAndWait(config, file1, file2);
+
+      if (result === null) {
+        ctx.ui.notify("Failed to connect to VS Code bridge.", "error");
+      } else if (result.timedOut) {
+        ctx.ui.notify("⏰ Timed out waiting for your decision.", "warning");
+      } else if (result.accepted) {
+        ctx.ui.notify("✅ Changes accepted!", "success");
+      } else {
+        ctx.ui.notify("❌ Changes rejected.", "info");
+      }
+    },
+  });
+
+  // --- Edit tool interceptor: show diff in VS Code before applying ---
+  pi.on("tool_call", async (event, ctx) => {
+    if (event.toolName !== "edit") return;
+
+    const filePath = event.input?.path;
+    if (!filePath || !fs.existsSync(filePath)) return;
+
+    // Save original content before edit runs
+    ensureDiffDir();
+    const beforePath = join(diffDir, `before-${Date.now()}-${Math.random().toString(36).slice(2,8)}`);
+    fs.copyFileSync(filePath, beforePath);
+    diffSessions.set(event.toolCallId, { beforePath, filePath });
+  });
+
+  pi.on("tool_result", async (event, ctx) => {
+    const session = diffSessions.get(event.toolCallId);
+    if (!session) return;
+    diffSessions.delete(event.toolCallId);
+
+    const { beforePath, filePath } = session;
+
+    try {
+      const original = fs.readFileSync(beforePath, "utf-8");
+      const modified = fs.readFileSync(filePath, "utf-8");
+
+      // No changes? Clean up and skip
+      if (original === modified) {
+        try { fs.unlinkSync(beforePath); } catch {}
+        return;
+      }
+
+      // Save proposed content for diff
+      const proposedPath = join(diffDir, `proposed-${Date.now()}-${Math.random().toString(36).slice(2,8)}`);
+      fs.writeFileSync(proposedPath, modified, "utf-8");
+
+      const config = getBridgeConfig();
+      if (config) {
+        ctx.ui.notify("📋 Review changes in VS Code...", "info");
+
+        const result = await showDiffAndWait(config, beforePath, proposedPath);
+
+        if (result && !result.accepted) {
+          // User rejected - restore original
+          ctx.ui.notify("❌ Changes rejected, file restored.", "info");
+          fs.copyFileSync(beforePath, filePath);
+          try { fs.unlinkSync(beforePath); } catch {}
+          try { fs.unlinkSync(proposedPath); } catch {}
+          return {
+            isError: true,
+            content: [{ type: "text", text: "❌ Changes rejected by user. File restored to original." }],
+          };
+        } else if (result && result.accepted) {
+          ctx.ui.notify("✅ Changes accepted.", "success");
+        }
+      }
+
+      // Clean up temp files
+      try { fs.unlinkSync(beforePath); } catch {}
+      try { fs.unlinkSync(proposedPath); } catch {}
+    } catch (e) {
+      try { fs.unlinkSync(beforePath); } catch {}
+    }
   });
 }

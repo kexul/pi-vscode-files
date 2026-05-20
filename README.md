@@ -29,6 +29,7 @@ When you type `@xxx` in pi's editor, files currently open in VS Code will appear
 |---------|-------------|
 | `/vscode-files` | Show list of VS Code open files |
 | `/vscode-status` | Check VS Code bridge connection status |
+| `/vscode-diff <file1> <file2>` | Open diff in VS Code and wait for accept/reject |
 
 ## How it works
 
