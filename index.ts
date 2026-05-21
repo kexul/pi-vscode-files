@@ -23,13 +23,6 @@ import * as fs from "node:fs";
 import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 
-// Debug logging — remove the import and LOG_FILE/log() when stable
-import { appendFileSync } from "node:fs";
-const LOG_FILE = join(homedir(), ".pi", "vscode-files-debug.log");
-function log(msg: string) {
-  try { appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`); } catch {}
-}
-
 interface BridgeConfig {
   url: string;
   token: string;
