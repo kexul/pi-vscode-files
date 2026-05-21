@@ -23,6 +23,13 @@ import * as fs from "node:fs";
 import { readFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 
+// Debug logging — remove the import and LOG_FILE/log() when stable
+import { appendFileSync } from "node:fs";
+const LOG_FILE = join(homedir(), ".pi", "vscode-files-debug.log");
+function log(msg: string) {
+  try { appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${msg}\n`); } catch {}
+}
+
 interface BridgeConfig {
   url: string;
   token: string;
@@ -351,8 +358,12 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    // Set custom editor with VS Code file autocomplete
-    ctx.ui.setEditorComponent((tui, theme, keybindings) => new VscodeFilesEditor(tui, theme, keybindings, ctx.cwd));
+    // Wrap the autocomplete provider to inject VS Code open files at the top of @ suggestions.
+    // We use addAutocompleteProvider instead of setEditorComponent because setEditorComponent
+    // replaces the entire editor (which may not receive input correctly across jiti boundaries).
+    ctx.ui.addAutocompleteProvider((baseProvider) => {
+      return new VscodeFilesAutocompleteProvider(baseProvider, ctx.cwd);
+    });
 
     ctx.ui.notify(`VS Code files (${editors.length}) added to @ autocomplete`, "info");
   });
