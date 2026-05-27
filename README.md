@@ -9,7 +9,7 @@ When you type `@xxx` in pi's editor, files currently open in VS Code will appear
 - **@ autocomplete** — VS Code open files appear at the top of `@` suggestions, with active/dirty files prioritized
 - **Interactive diff** — automatic VS Code side-by-side diff with Accept/Reject for every `edit` tool change
 
-![screenshot](screenshot.png)
+![screenshot](screenshot-at.png)
 
 ## Requirements
 
@@ -39,6 +39,8 @@ When pi uses the `edit` tool to modify files, this extension automatically opens
 - **⏰ Timeout (60s)** — changes are kept by default so you never lose work
 
 The diff opens at the first changed line so you can quickly review what the agent did. No more blind edits — you see every change before it lands.
+
+![screenshot](screenshot.png)
 
 ## How it works
 
