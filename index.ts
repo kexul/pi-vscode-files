@@ -6,7 +6,7 @@
  *
  * Requirements:
  * - pi-vscode-lite extension installed in VS Code
- * - The extension writes connection info to ~/.pi/vscode-bridge.json
+ * - The extension writes connection info to ~/.pi/pi-vscode-bridge/
  */
 
 import type { ExtensionAPI, ExtensionContext, KeybindingsManager } from "@mariozechner/pi-coding-agent";
@@ -20,7 +20,7 @@ import type {
 } from "@mariozechner/pi-tui";
 import { relative, basename, join, isAbsolute } from "node:path";
 import * as fs from "node:fs";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 
 interface BridgeConfig {
@@ -37,20 +37,44 @@ interface OpenEditor {
   isActive: boolean;
 }
 
-// Read bridge configs from ~/.pi/vscode-bridge.json
-// Supports both single object (legacy) and array format (multi-window)
+// Read bridge configs from ~/.pi/pi-vscode-bridge/ (per-PID files, no race condition).
+// Falls back to legacy ~/.pi/vscode-bridge.json (single file, single/array format).
 function getBridgeConfigs(): BridgeConfig[] {
-  const bridgeFile = join(homedir(), ".pi", "vscode-bridge.json");
-  if (!existsSync(bridgeFile)) return [];
-  
+  const bridgeDir = join(homedir(), ".pi", "pi-vscode-bridge");
+  const legacyFile = join(homedir(), ".pi", "vscode-bridge.json");
+  const now = Date.now();
+  const configs: BridgeConfig[] = [];
+
+  // Prefer per-PID bridge directory (new format — no race condition)
+  if (existsSync(bridgeDir)) {
+    try {
+      for (const name of readdirSync(bridgeDir)) {
+        if (!name.endsWith(".json")) continue;
+        const filePath = join(bridgeDir, name);
+        try {
+          const data = JSON.parse(readFileSync(filePath, "utf8"));
+          if (now - data.timestamp < 60 * 60 * 1000) {
+            configs.push(data);
+          }
+        } catch {
+          // Corrupt file, skip
+        }
+      }
+    } catch {
+      // Directory read error, fall through to legacy
+    }
+    if (configs.length > 0) return configs.sort((a, b) => b.timestamp - a.timestamp);
+  }
+
+  // Fallback: legacy single bridge file (backward compatibility)
+  if (!existsSync(legacyFile)) return [];
   try {
-    const content = readFileSync(bridgeFile, "utf8");
+    const content = readFileSync(legacyFile, "utf8");
     const parsed = JSON.parse(content);
-    const configs: BridgeConfig[] = Array.isArray(parsed) ? parsed : [parsed];
-    
-    // Filter out stale entries (older than 24 hours)
-    const now = Date.now();
-    return configs.filter(c => now - c.timestamp < 24 * 60 * 60 * 1000);
+    const legacy: BridgeConfig[] = Array.isArray(parsed) ? parsed : [parsed];
+    return legacy
+      .filter(c => now - c.timestamp < 60 * 60 * 1000)
+      .sort((a, b) => b.timestamp - a.timestamp);
   } catch {
     return [];
   }
@@ -59,6 +83,22 @@ function getBridgeConfigs(): BridgeConfig[] {
 // Get first available bridge config (for backward compatibility)
 function getBridgeConfig(): BridgeConfig | null {
   return getBridgeConfigs()[0] ?? null;
+}
+
+// Manual fetch timeout using AbortController + setTimeout.
+// Does NOT rely on AbortSignal.timeout() which is only available in Node.js 17.3+.
+// This ensures timeout works on all Node.js versions that support fetch.
+function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`Request timeout after ${timeoutMs}ms`));
+    }, timeoutMs);
+    fetch(url, { ...options, signal: controller.signal })
+      .then((res) => { clearTimeout(timer); resolve(res); })
+      .catch((err) => { clearTimeout(timer); reject(err); });
+  });
 }
 
 // Call VS Code bridge to get open editors from ALL windows
@@ -72,13 +112,10 @@ async function getOpenEditors(): Promise<OpenEditor[]> {
   const results = await Promise.allSettled(
     configs.map(async (config) => {
       try {
-        const response = await fetch(`${config.url}/open-editors`, {
+        const response = await fetchWithTimeout(`${config.url}/open-editors`, {
           method: "GET",
-          headers: {
-            "X-Token": config.token,
-          },
-          signal: AbortSignal.timeout(3000),
-        });
+          headers: { "X-Token": config.token },
+        }, 3000);
 
         if (!response.ok) return [];
         return (await response.json()) as OpenEditor[];
@@ -334,6 +371,7 @@ export default function (pi: ExtensionAPI) {
   let bridgeAvailable = false;
 
   pi.on("session_start", async (_event, ctx) => {
+    console.log("[pi-vscode-files] Session started, checking VS Code bridge...");
     // Check if bridge is available
     const config = getBridgeConfig();
     bridgeAvailable = !!config;
@@ -343,11 +381,21 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
-    // Test connection
-    const editors = await getOpenEditors();
+    // Test connection with hard 5s timeout to avoid blocking session start.
+    // If bridge is unreachable (dead port, stale PID), we bail out fast.
+    let editors: OpenEditor[] = [];
+    try {
+      editors = await Promise.race([
+        getOpenEditors(),
+        new Promise<OpenEditor[]>((_, reject) => setTimeout(() => reject(new Error("timeout")), 5000)),
+      ]);
+    } catch {
+      editors = [];
+    }
     if (editors.length === 0) {
-      // Bridge file exists but connection failed - might be stale
+      // Bridge file exists but connection failed — might be stale
       bridgeAvailable = false;
+      console.log("[pi-vscode-files] Bridge unreachable, will retry next session.");
       return;
     }
 
@@ -416,29 +464,37 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // Helper: call VS Code bridge to show diff and wait for accept/reject
+  // Helper: call VS Code bridge to show diff and wait for accept/reject.
+  // Tries bridges sequentially to avoid opening diffs in multiple windows.
   async function showDiffAndWait(
-    config: BridgeConfig,
     file1: string,
     file2: string,
-    timeout: number = 300
+    timeout: number = 60
   ): Promise<{ accepted: boolean; timedOut: boolean } | null> {
-    try {
-      const response = await fetch(`${config.url}/diff-and-wait`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Token": config.token,
-        },
-        body: JSON.stringify({ file1, file2, timeout }),
-        signal: AbortSignal.timeout((timeout + 10) * 1000),
-      });
+    const configs = getBridgeConfigs();
+    if (configs.length === 0) return null;
 
-      if (!response.ok) return null;
-      return await response.json();
-    } catch {
-      return null;
+    // Try bridges one by one; the diff only opens in the first reachable window
+    for (const config of configs) {
+      try {
+        const response = await fetchWithTimeout(`${config.url}/diff-and-wait`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Token": config.token,
+          },
+          body: JSON.stringify({ file1, file2, timeout }),
+        }, (timeout + 5) * 1000);
+
+        if (!response.ok) continue;
+        return await response.json();
+      } catch {
+        // This window is likely closed, try the next one
+        continue;
+      }
     }
+
+    return null;
   }
 
   // Register a command to show diff in VS Code and wait for accept/reject
@@ -489,7 +545,7 @@ export default function (pi: ExtensionAPI) {
 
       ctx.ui.notify("Opening diff in VS Code...", "info");
 
-      const result = await showDiffAndWait(config, file1, file2);
+      const result = await showDiffAndWait(file1, file2);
 
       if (result === null) {
         ctx.ui.notify("Failed to connect to VS Code bridge.", "error");
@@ -512,7 +568,8 @@ export default function (pi: ExtensionAPI) {
 
     // Save original content before edit runs
     ensureDiffDir();
-    const beforePath = join(diffDir, `before-${Date.now()}-${Math.random().toString(36).slice(2,8)}`);
+    const base = basename(filePath);
+    const beforePath = join(diffDir, `${base}.before.${Date.now()}-${Math.random().toString(36).slice(2,8)}`);
     fs.copyFileSync(filePath, beforePath);
     diffSessions.set(event.toolCallId, { beforePath, filePath });
   });
@@ -534,34 +591,39 @@ export default function (pi: ExtensionAPI) {
         return;
       }
 
-      // Save proposed content for diff
-      const proposedPath = join(diffDir, `proposed-${Date.now()}-${Math.random().toString(36).slice(2,8)}`);
-      fs.writeFileSync(proposedPath, modified, "utf-8");
-
       const config = getBridgeConfig();
       if (config) {
         ctx.ui.notify("📋 Review changes in VS Code...", "info");
 
-        const result = await showDiffAndWait(config, beforePath, proposedPath);
+        // Diff between original snapshot (temp) and the real file to make it intuitive
+        const result = await showDiffAndWait(beforePath, filePath);
 
-        if (result && !result.accepted) {
-          // User rejected - restore original
+        if (result && !result.accepted && !result.timedOut) {
+          // User explicitly rejected - restore original and stop agent
           ctx.ui.notify("❌ Changes rejected, file restored.", "info");
-          fs.copyFileSync(beforePath, filePath);
+          fs.writeFileSync(filePath, original, "utf-8");
           try { fs.unlinkSync(beforePath); } catch {}
-          try { fs.unlinkSync(proposedPath); } catch {}
+          ctx.abort();
           return {
             isError: true,
-            content: [{ type: "text", text: "❌ Changes rejected by user. File restored to original." }],
+            content: [{ type: "text", text: "❌ Changes rejected by user. Agent stopped. File restored to original." }],
           };
-        } else if (result && result.accepted) {
-          ctx.ui.notify("✅ Changes accepted.", "success");
+        } else if (result && (result.accepted || result.timedOut)) {
+          // Accepted or timed out — keep changes
+          if (result.timedOut) {
+            ctx.ui.notify("⏰ Diff timed out, changes kept.", "warning");
+          } else {
+            ctx.ui.notify("✅ Changes accepted.", "success");
+          }
         }
       }
 
-      // Clean up temp files
-      try { fs.unlinkSync(beforePath); } catch {}
-      try { fs.unlinkSync(proposedPath); } catch {}
+      // Clean up temp file with a delay — VS Code may still be closing the diff
+      // view asynchronously and needs the beforePath to exist until then.
+      // If showDiffAndWait failed or timed out, the diff may still be open in VS Code.
+      setTimeout(() => {
+        try { fs.unlinkSync(beforePath); } catch {}
+      }, 5000);
     } catch (e) {
       try { fs.unlinkSync(beforePath); } catch {}
     }

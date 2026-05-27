@@ -7,7 +7,7 @@ A lightweight VS Code extension that provides a bridge for [pi](https://github.c
 - Runs a local HTTP server on an ephemeral port
 - Provides API endpoints for querying open editors
 - Token-based authentication for security
-- Writes connection info to `~/.pi/vscode-bridge.json`
+- Writes per-window bridge files to `~/.pi/pi-vscode-bridge/{pid}.json` (no race conditions)
 
 ## API Endpoints
 
@@ -102,7 +102,7 @@ code --install-extension pi-vscode-lite-0.0.1.vsix
 
 - Server only listens on `127.0.0.1` (localhost)
 - All requests require a random token generated on activation
-- Token is stored in `~/.pi/vscode-bridge.json`
+- Each window writes its own bridge file in `~/.pi/pi-vscode-bridge/{pid}.json`
 
 ## License
 
