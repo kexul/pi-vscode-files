@@ -12,6 +12,8 @@ When you type `@xxx` in pi's editor, files currently open in VS Code will appear
 - 🔍 Fuzzy matching support
 - Merges with pi's default file suggestions
 
+![screenshot](screenshot.png)
+
 ## Requirements
 
 - [pi](https://github.com/nicx-next/pi-coding-agent) coding agent
@@ -33,7 +35,7 @@ When you type `@xxx` in pi's editor, files currently open in VS Code will appear
 
 ## How it works
 
-1. The `pi-vscode-lite` VS Code extension runs a local HTTP server and writes connection info to `~/.pi/vscode-bridge.json`
+1. The `pi-vscode-lite` VS Code extension runs a local HTTP server and writes connection info to `~/.pi/pi-vscode-bridge/{pid}.json`
 2. This pi extension reads the bridge config and queries the server for open editors
 3. When you type `@`, it fetches the open file list and prioritizes them in autocomplete
 
