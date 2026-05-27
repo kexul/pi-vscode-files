@@ -6,12 +6,8 @@ When you type `@xxx` in pi's editor, files currently open in VS Code will appear
 
 ## Features
 
-- 📂 Shows VS Code open files at the top of `@` autocomplete suggestions
-- ⭐ Active file appears first
-- ● Dirty (unsaved) files are prioritized
-- 🔍 Fuzzy matching support
-- 🆚 Interactive diff review — VS Code side-by-side diff with Accept/Reject for `edit` tool changes
-- Merges with pi's default file suggestions
+- **@ autocomplete** — VS Code open files appear at the top of `@` suggestions, with active/dirty files prioritized
+- **Interactive diff** — automatic VS Code side-by-side diff with Accept/Reject for every `edit` tool change
 
 ![screenshot](screenshot.png)
 
