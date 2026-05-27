@@ -15,7 +15,7 @@ When you type `@xxx` in pi's editor, files currently open in VS Code will appear
 
 ## Installation
 
-1. Install the VS Code extension `pi-vscode-lite`
+1. Install the VS Code extension [pi-vscode-lite](https://github.com/kexul/pi-vscode-files/blob/master/pi-vscode-lite/pi-vscode-lite-0.0.1.vsix)
 2. Copy this extension to `~/.pi/agent/extensions/pi-vscode-files/`
 3. Restart pi
 
