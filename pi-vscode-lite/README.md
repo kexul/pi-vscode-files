@@ -9,6 +9,8 @@ A lightweight VS Code extension that provides a bridge for [pi](https://github.c
 - Token-based authentication for security
 - Writes per-window bridge files to `~/.pi/pi-vscode-bridge/{pid}.json` (no race conditions)
 
+![screenshot](screenshot.png)
+
 ## API Endpoints
 
 | Endpoint | Method | Description |
