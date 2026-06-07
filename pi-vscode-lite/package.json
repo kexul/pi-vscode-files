@@ -10,5 +10,16 @@
   "categories": ["Other"],
   "activationEvents": ["*"],
   "main": "./extension.js",
-  "contributes": {}
+  "contributes": {
+    "commands": [
+      {
+        "command": "piDiffReview.accept",
+        "title": "Pi Diff Review: Accept"
+      },
+      {
+        "command": "piDiffReview.reject",
+        "title": "Pi Diff Review: Reject"
+      }
+    ]
+  }
 }

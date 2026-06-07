@@ -11,30 +11,96 @@ const PID = process.pid;
 const PI_DIR = path.join(process.env.USERPROFILE || process.env.HOME, '.pi');
 const BRIDGE_DIR = path.join(PI_DIR, 'pi-vscode-bridge');
 const BRIDGE_FILE = path.join(BRIDGE_DIR, `${PID}.json`);
+const BEFORE_DIFF_SCHEME = 'pi-diff-before';
+const beforeDiffContents = new Map();
+let diffReviewController = null;
 
-// Clean stale bridge files (older than 24 hours) on startup.
-// Each VS Code window writes its own per-PID file, so there is no
-// shared mutable state and therefore no race condition on read-modify-write.
-function cleanStaleBridges() {
-    try {
-        if (!fs.existsSync(BRIDGE_DIR)) return;
-        const now = Date.now();
-        for (const name of fs.readdirSync(BRIDGE_DIR)) {
-            if (!name.endsWith('.json')) continue;
-            const filePath = path.join(BRIDGE_DIR, name);
-            try {
-                const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-                if (now - data.timestamp > 24 * 60 * 60 * 1000) {
-                    fs.unlinkSync(filePath);
-                }
-            } catch {
-                // Corrupt file, remove it
-                try { fs.unlinkSync(filePath); } catch {}
-            }
-        }
-    } catch {
-        // Silently ignore cleanup errors
+class DiffReviewController {
+    constructor(context) {
+        this.pending = null;
+        this.resolvePending = null;
+        this.acceptItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 10000);
+        this.rejectItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 9999);
+        this.infoItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 9998);
+
+        this.acceptItem.text = '$(check) Accept Pi Edit';
+        this.acceptItem.tooltip = 'Accept the pending Pi edit';
+        this.acceptItem.command = 'piDiffReview.accept';
+
+        this.rejectItem.text = '$(close) Reject Pi Edit';
+        this.rejectItem.tooltip = 'Reject the pending Pi edit and restore the original file';
+        this.rejectItem.command = 'piDiffReview.reject';
+
+        this.infoItem.text = '$(diff) Pi Review';
+
+        context.subscriptions.push(
+            this.acceptItem,
+            this.rejectItem,
+            this.infoItem,
+            vscode.commands.registerCommand('piDiffReview.accept', () => this.decide('\u2705 Accept')),
+            vscode.commands.registerCommand('piDiffReview.reject', () => this.decide('\u274c Reject'))
+        );
     }
+
+    async ask({ filePath, timeoutMs }) {
+        this.pending = { filePath, timeoutMs };
+        this.show(filePath);
+
+        let resolved = false;
+        return await new Promise(resolve => {
+            const timer = setTimeout(() => {
+                if (resolved) return;
+                resolved = true;
+                this.resolvePending = null;
+                this.pending = null;
+                this.hide();
+                resolve('timeout');
+            }, timeoutMs);
+
+            this.resolvePending = (value) => {
+                if (resolved) return;
+                resolved = true;
+                clearTimeout(timer);
+                this.resolvePending = null;
+                this.pending = null;
+                this.hide();
+                resolve(value);
+            };
+        });
+    }
+
+    decide(value) {
+        if (this.resolvePending) this.resolvePending(value);
+    }
+
+    show(filePath) {
+        const fileName = path.basename(filePath);
+        this.infoItem.tooltip = `Review Pi edit: ${filePath}`;
+        this.infoItem.text = `$(diff) Pi Review: ${fileName}`;
+        this.infoItem.show();
+        this.rejectItem.show();
+        this.acceptItem.show();
+    }
+
+    hide() {
+        this.acceptItem.hide();
+        this.rejectItem.hide();
+        this.infoItem.hide();
+    }
+}
+
+function createBeforeDiffUri(file1, file2) {
+    const id = crypto.randomUUID();
+    beforeDiffContents.set(id, fs.readFileSync(file1, 'utf-8'));
+    const name = `${path.basename(file2)}.before`;
+    return {
+        id,
+        uri: vscode.Uri.from({ scheme: BEFORE_DIFF_SCHEME, path: `/${name}`, query: id })
+    };
+}
+
+function cleanupBeforeDiffContent(id) {
+    if (id) beforeDiffContents.delete(id);
 }
 
 // Write this window's bridge config to its own per-PID file.
@@ -46,11 +112,15 @@ function registerBridge(url) {
         }
         // Write to temp file first, then rename for atomicity
         const tmpFile = BRIDGE_FILE + '.tmp';
+        const workspaceFolders = vscode.workspace.workspaceFolders
+            ? vscode.workspace.workspaceFolders.map(f => f.uri.fsPath)
+            : [];
         fs.writeFileSync(tmpFile, JSON.stringify({
             url,
             token,
             pid: PID,
-            timestamp: Date.now()
+            timestamp: Date.now(),
+            workspaceFolders
         }, null, 2));
         fs.renameSync(tmpFile, BRIDGE_FILE);
     } catch {
@@ -116,6 +186,24 @@ function getOpenEditors() {
     return [...seen.values()];
 }
 
+// Check if a file path belongs to the current workspace.
+// Comparison is case-insensitive on Windows (path.normalize preserves case).
+function isInWorkspace(filePath) {
+    const folders = vscode.workspace.workspaceFolders;
+    if (!folders || folders.length === 0) return false;
+    const normalizedPath = path.normalize(filePath);
+    for (const folder of folders) {
+        const folderPath = path.normalize(folder.uri.fsPath);
+        // Case-insensitive comparison for cross-platform compatibility
+        const prefix = (folderPath + path.sep).toLowerCase();
+        if (normalizedPath.toLowerCase().startsWith(prefix) ||
+            normalizedPath.toLowerCase() === folderPath.toLowerCase()) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Find the first line that differs between two files (0-indexed)
 function findFirstChangedLine(file1, file2) {
     try {
@@ -134,6 +222,14 @@ function findFirstChangedLine(file1, file2) {
 }
 
 function activate(context) {
+    context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider(BEFORE_DIFF_SCHEME, {
+        provideTextDocumentContent(uri) {
+            return beforeDiffContents.get(uri.query) || '';
+        }
+    }));
+
+    diffReviewController = new DiffReviewController(context);
+
     // Generate token
     token = crypto.randomBytes(16).toString('hex');
     
@@ -171,7 +267,10 @@ function activate(context) {
         }
 
         // Handle requests
-        if (req.url === '/open-editors' && req.method === 'GET') {
+        if (req.url === '/health' && req.method === 'GET') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ status: 'ok', pid: PID }));
+        } else if (req.url === '/open-editors' && req.method === 'GET') {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(getOpenEditors()));
         } else if (req.url === '/workspace-folders' && req.method === 'GET') {
@@ -186,11 +285,19 @@ function activate(context) {
                     res.end(JSON.stringify({ error: 'Both file1 and file2 are required' }));
                     return;
                 }
+                // Only open diff if the file belongs to the current workspace
+                if (!isInWorkspace(file2)) {
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ success: true, skipped: 'not_in_workspace' }));
+                    return;
+                }
+                const before = createBeforeDiffUri(file1, file2);
                 vscode.commands.executeCommand('vscode.diff',
-                    vscode.Uri.file(file1),
+                    before.uri,
                     vscode.Uri.file(file2),
-                    `${path.basename(file1)} \u2194 ${path.basename(file2)}`
+                    `${path.basename(file2)} (before) \u2194 ${path.basename(file2)}`
                 );
+                setTimeout(() => cleanupBeforeDiffContent(before.id), 60 * 60 * 1000);
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ success: true }));
             }).catch(err => {
@@ -206,11 +313,21 @@ function activate(context) {
                     return;
                 }
 
-                // Open the diff in VS Code
+                // Only open diff if the file belongs to the current workspace;
+                // otherwise auto-accept without showing the diff.
+                if (!isInWorkspace(file2)) {
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify({ accepted: true, timedOut: false, autoAccepted: true }));
+                    return;
+                }
+
+                // Open the diff in VS Code. Use a virtual document for the "before" side
+                // so the temp snapshot file doesn't pollute VS Code's Ctrl+P / recent files.
+                const before = createBeforeDiffUri(file1, file2);
                 await vscode.commands.executeCommand('vscode.diff',
-                    vscode.Uri.file(file1),
+                    before.uri,
                     vscode.Uri.file(file2),
-                    `${path.basename(file1)} \u2194 ${path.basename(file2)}`
+                    `${path.basename(file2)} (before) \u2194 ${path.basename(file2)}`
                 );
 
                 // Capture the diff tab so we can close it on accept
@@ -228,27 +345,26 @@ function activate(context) {
                     }
                 } catch {}
 
-                // Show Accept/Reject quick-pick at top (non-blocking, won't auto-dismiss)
+                // Persistent side-panel decision UI. It does not cover the editor/logs.
                 const timeout = (body.timeout || 60) * 1000;
-                const result = await Promise.race([
-                    vscode.window.showQuickPick(
-                        ['\u2705 Accept', '\u274c Reject'],
-                        {
-                            placeHolder: 'Review the changes and decide',
-                            ignoreFocusOut: true,
-                        }
-                    ),
-                    new Promise(resolve => setTimeout(() => resolve(undefined), timeout))
-                ]);
+                const result = diffReviewController
+                    ? await diffReviewController.ask({ filePath: file2, timeoutMs: timeout })
+                    : 'timeout';
 
                 const accepted = result === '\u2705 Accept';
+                const rejected = result === '\u274c Reject';
+                const timedOut = result === 'timeout';
+
+                // Close the diff tab after an explicit decision (accept or reject).
+                // Leave it open on timeout/cancel so the user can still inspect it.
+                if ((accepted || rejected) && diffTab) {
+                    try { await vscode.window.tabGroups.close(diffTab); } catch {}
+                    cleanupBeforeDiffContent(before.id);
+                } else {
+                    setTimeout(() => cleanupBeforeDiffContent(before.id), 60 * 60 * 1000);
+                }
 
                 if (accepted) {
-                    // Close diff tab
-                    if (diffTab) {
-                        try { await vscode.window.tabGroups.close(diffTab); } catch {}
-                    }
-
                     // Open the real file and navigate to the first changed line
                     try {
                         const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(file2));
@@ -263,7 +379,7 @@ function activate(context) {
                 res.writeHead(200, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({
                     accepted,
-                    timedOut: result === null
+                    timedOut
                 }));
             }).catch(err => {
                 res.writeHead(400);
@@ -279,8 +395,6 @@ function activate(context) {
         const port = server.address().port;
         const url = `http://127.0.0.1:${port}`;
         
-        // Clean stale bridges first, then register this window
-        cleanStaleBridges();
         registerBridge(url);
         
         console.log(`Pi VS Code Lite bridge running on port ${port} (PID: ${PID})`);
