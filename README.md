@@ -14,8 +14,6 @@ A [pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) ext
 
 - **Clickable symbols** — symbols (functions, classes, etc.) in AI replies become clickable OSC 8 links that open the definition in VS Code. Also makes diff hunk headers clickable and appends jump links after code blocks.
 
-- **$ symbol autocomplete** — type `$` to fuzzy-search indexed symbols from open VS Code files
-
 ## Commands
 
 | Command | Description |
@@ -33,7 +31,7 @@ A [pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) ext
 pi-vscode-files/
 ├── index.ts              # Main entry: @ autocomplete, diff review, commands
 ├── bridge.ts             # Shared VS Code bridge utilities (types, fetch, configs, open editors)
-├── clickable-symbols.ts  # Clickable symbols feature (extraction, OSC8 links, $ autocomplete)
+├── clickable-symbols.ts  # Clickable symbols feature (extraction, OSC8 links, diff jump links)
 ├── README.md
 ├── screenshot-at.png
 ├── screenshot.png
