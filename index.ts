@@ -20,7 +20,7 @@ import type {
   TUI,
   EditorTheme,
 } from "@earendil-works/pi-tui";
-import { relative, basename, join, isAbsolute } from "node:path";
+import { relative, basename, join, isAbsolute, sep } from "node:path";
 import * as fs from "node:fs";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -29,7 +29,6 @@ import {
   getActiveBridgeConfig,
   getOpenEditors,
   showDiffAndWait,
-  fileBelongsToWorkspace,
   type OpenEditor,
 } from "./bridge";
 import { registerClickableSymbols } from "./clickable-symbols";
@@ -76,6 +75,11 @@ function extractAtPrefix(text: string): string | null {
 function parseAtPrefix(prefix: string): { rawQuery: string; isQuotedPrefix: boolean } {
   if (prefix.startsWith('@"')) return { rawQuery: prefix.slice(2), isQuotedPrefix: true };
   return { rawQuery: prefix.slice(1), isQuotedPrefix: false };
+}
+
+function isInsideCwd(filePath: string, cwd: string): boolean {
+  const relPath = relative(cwd, filePath);
+  return relPath === "" || (relPath !== ".." && !relPath.startsWith(`..${sep}`) && !isAbsolute(relPath));
 }
 
 function toSuggestion(
@@ -154,6 +158,7 @@ class VscodeFilesAutocompleteProvider implements AutocompleteProvider {
     if (options.signal.aborted) return null;
 
     const matchedEditors = openEditors
+      .filter((editor) => isInsideCwd(editor.filePath, this.cwd))
       .map((editor) => {
         const relPath = relative(this.cwd, editor.filePath).replace(/\\/g, "/");
         const fileName = basename(editor.filePath);
@@ -282,12 +287,14 @@ export default function (pi: ExtensionAPI) {
       return;
     }
 
+    const cwdEditorCount = editors.filter((editor) => isInsideCwd(editor.filePath, ctx.cwd)).length;
+
     // 注册 @ autocomplete provider
     ctx.ui.addAutocompleteProvider((baseProvider) => {
       return new VscodeFilesAutocompleteProvider(baseProvider, ctx.cwd);
     });
 
-    ctx.ui.notify(`VS Code files (${editors.length}) added to @ autocomplete`, "info");
+    ctx.ui.notify(`VS Code files (${cwdEditorCount}/${editors.length} in cwd) added to @ autocomplete`, "info");
   });
 
   // /vscode-files 命令
