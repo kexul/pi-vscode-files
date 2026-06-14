@@ -6,6 +6,7 @@ A [pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) ext
 
 ## Features
 
+- **Concurrent edit safety** — multiple edits to the same file in parallel are merged into a single diff review, preventing mixed or duplicated changes
 - **@ autocomplete** — VS Code open files appear at the top of `@` suggestions, with active/dirty files prioritized
 ![screenshot](screenshot-at.png)
 
@@ -40,9 +41,10 @@ pi-vscode-files/
 
 ## Installation
 
-1. Install the VS Code extension [pi-vscode-lite](https://github.com/kexul/pi-vscode-files/blob/master/pi-vscode-lite/pi-vscode-lite-0.0.1.vsix)
-2. Copy this extension to `~/.pi/agent/extensions/pi-vscode-files/`
-3. Restart pi
+1. Ensure VS Code is running with the pi-vscode-lite extension installed
+2. Install the VS Code extension [pi-vscode-lite](https://github.com/kexul/pi-vscode-files/blob/master/pi-vscode-lite/pi-vscode-lite-0.0.1.vsix)
+3. Copy this extension to `~/.pi/agent/extensions/pi-vscode-files/`
+4. Restart pi
 
 ## License
 

@@ -1,5 +1,5 @@
 /**
- * bridge.ts
+ * bridge.ts — shared VS Code bridge
  *
  * Shared VS Code bridge utilities used by both @ autocomplete and clickable-symbols.
  */

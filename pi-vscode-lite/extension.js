@@ -15,10 +15,18 @@ const BEFORE_DIFF_SCHEME = 'pi-diff-before';
 const beforeDiffContents = new Map();
 let diffReviewController = null;
 
+// Serial mutex: ensures only one diff-and-wait flow runs at a time
+// (open diff → review → close diff → next opens). This keeps the
+// active diff tab in sync with the Status Bar review prompt.
+let _diffWaitSerial = Promise.resolve();
+
 class DiffReviewController {
     constructor(context) {
         this.pending = null;
         this.resolvePending = null;
+        /** @type {{filePath: string, timeoutMs: number, resolve: Function}[]} */
+        this._queue = [];
+        this._busy = false;
         this.acceptItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 10000);
         this.rejectItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 9999);
         this.infoItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 9998);
@@ -42,7 +50,23 @@ class DiffReviewController {
         );
     }
 
+    /**
+     * Public entry point. If a review is already active, queue this
+     * request. Otherwise execute immediately. This prevents concurrent
+     * diff reviews from overwriting each other's pending state.
+     */
     async ask({ filePath, timeoutMs }) {
+        if (this._busy) {
+            return new Promise(resolve => {
+                this._queue.push({ filePath, timeoutMs, resolve });
+            });
+        }
+        return this._doAsk({ filePath, timeoutMs });
+    }
+
+    /** @returns {Promise<string>} '✅ Accept' | '❌ Reject' | 'timeout' */
+    async _doAsk({ filePath, timeoutMs }) {
+        this._busy = true;
         this.pending = { filePath, timeoutMs };
         this.show(filePath);
 
@@ -54,6 +78,7 @@ class DiffReviewController {
                 this.resolvePending = null;
                 this.pending = null;
                 this.hide();
+                this._nextInQueue();
                 resolve('timeout');
             }, timeoutMs);
 
@@ -64,9 +89,19 @@ class DiffReviewController {
                 this.resolvePending = null;
                 this.pending = null;
                 this.hide();
+                this._nextInQueue();
                 resolve(value);
             };
         });
+    }
+
+    /** Start the next queued review (if any) after the current one finishes. */
+    _nextInQueue() {
+        this._busy = false;
+        const next = this._queue.shift();
+        if (next) {
+            this._doAsk(next).then(next.resolve);
+        }
     }
 
     decide(value) {
@@ -234,7 +269,7 @@ function activate(context) {
     token = crypto.randomBytes(16).toString('hex');
     
     // Find available port
-    server = http.createServer((req, res) => {
+    server = http.createServer(async (req, res) => {
         // CORS headers
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -305,6 +340,12 @@ function activate(context) {
                 res.end(JSON.stringify({ error: err.message }));
             });
         } else if (req.url === '/diff-and-wait' && req.method === 'POST') {
+            // Serialize: wait for any previous diff-and-wait to finish
+            const prevDone = _diffWaitSerial;
+            let releaseSerial;
+            _diffWaitSerial = new Promise(r => { releaseSerial = r; });
+            await prevDone;
+
             readJsonBody(req).then(async (body) => {
                 const { file1, file2 } = body;
                 if (!file1 || !file2) {
@@ -330,9 +371,6 @@ function activate(context) {
                     `${path.basename(file2)} (before) \u2194 ${path.basename(file2)}`
                 );
 
-                // Capture the diff tab so we can close it on accept
-                const diffTab = vscode.window.tabGroups.activeTabGroup?.activeTab;
-
                 // Navigate the diff view to the first changed line
                 try {
                     const diffEditor = vscode.window.activeTextEditor;
@@ -356,9 +394,12 @@ function activate(context) {
                 const timedOut = result === 'timeout';
 
                 // Close the diff tab after an explicit decision (accept or reject).
-                // Leave it open on timeout/cancel so the user can still inspect it.
-                if ((accepted || rejected) && diffTab) {
-                    try { await vscode.window.tabGroups.close(diffTab); } catch {}
+                // Use dynamic lookup instead of a captured reference — concurrent
+                // diffs may reuse the preview tab, making a stale reference invalid.
+                if (accepted || rejected) {
+                    // Close the diff tab. Since the flow is serialized,
+                    // the active editor is guaranteed to be the diff being reviewed.
+                    try { await vscode.commands.executeCommand('workbench.action.closeActiveEditor'); } catch {}
                     cleanupBeforeDiffContent(before.id);
                 } else {
                     setTimeout(() => cleanupBeforeDiffContent(before.id), 60 * 60 * 1000);
@@ -384,6 +425,8 @@ function activate(context) {
             }).catch(err => {
                 res.writeHead(400);
                 res.end(JSON.stringify({ error: err.message }));
+            }).finally(() => {
+                releaseSerial();
             });
         } else {
             res.writeHead(404);

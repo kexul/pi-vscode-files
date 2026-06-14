@@ -1,5 +1,5 @@
 /**
- * clickable-symbols.ts
+ * clickable-symbols.ts — symbol link renderer
  *
  * 扫描 VS Code 当前打开文件中的函数/类定义，在 pi 回复中将符号名变成可点击链接，
  * 直接跳转到定义行。排除代码块、表格行，以及 .py/.ts 等看起来像文件名的字符串。
