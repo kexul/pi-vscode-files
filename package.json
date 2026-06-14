@@ -1,0 +1,9 @@
+{
+  "name": "pi-vscode-files",
+  "version": "0.0.2",
+  "description": "Pi extension: VS Code file autocomplete & diff review",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}
