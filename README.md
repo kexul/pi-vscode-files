@@ -1,17 +1,13 @@
 # pi-vscode-files
 
-A [pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) extension that integrates VS Code with pi, providing @ autocomplete, interactive diffs, and clickable symbols.
+A [pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) extension that integrates VS Code with pi, providing @ autocomplete and clickable symbols.
 
-> **@ autocomplete** — type `@xxx` and VS Code open files appear first. **Interactive diff** — review and accept/reject every edit in VS Code's side-by-side diff before it applies. **Clickable symbols** — function/class names in AI replies become clickable links that jump to the definition line.
+> **@ autocomplete** — type `@xxx` and VS Code open files appear first. **Clickable symbols** — function/class names in AI replies become clickable links that jump to the definition line.
 
 ## Features
 
-- **Concurrent edit safety** — multiple edits to the same file in parallel are merged into a single diff review, preventing mixed or duplicated changes
 - **@ autocomplete** — VS Code open files appear at the top of `@` suggestions, with active/dirty files prioritized
 ![screenshot](screenshot-at.png)
-
-- **Interactive diff** — automatic VS Code side-by-side diff with Accept/Reject for every `edit` tool change
-![screenshot](screenshot.png)
 
 - **Clickable symbols** — symbols (functions, classes, etc.) in AI replies become clickable OSC 8 links that open the definition in VS Code. Also makes diff hunk headers clickable and appends jump links after code blocks.
 
@@ -21,22 +17,19 @@ A [pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) ext
 |---------|-------------|
 | `/vscode-files` | Show VS Code open files |
 | `/vscode-status` | Check VS Code bridge status |
-| `/vscode-diff <file1> <file2>` | Open diff in VS Code and wait for accept/reject |
-| `/symbols-reindex` | Reindex symbols from VS Code open files |
 | `/symbols-toggle` | Toggle clickable symbols on/off |
-| `/symbols-stats` | Show symbol index stats |
 
 ## File Structure
 
 ```
 pi-vscode-files/
-├── index.ts              # Main entry: @ autocomplete, diff review, commands
+├── index.ts              # Main entry: @ autocomplete and commands
 ├── bridge.ts             # Shared VS Code bridge utilities (types, fetch, configs, open editors)
 ├── clickable-symbols.ts  # Clickable symbols feature (extraction, OSC8 links, diff jump links)
 ├── README.md
 ├── screenshot-at.png
 ├── screenshot.png
-└── pi-vscode-lite/       # VS Code extension (unchanged)
+└── pi-vscode-lite/       # VS Code extension
 ```
 
 ## Installation

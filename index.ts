@@ -3,32 +3,24 @@
  *
  * A pi extension that:
  * 1. Prioritizes VS Code open files in @ autocomplete
- * 2. Opens interactive diffs for edit tool changes
- * 3. Makes symbols in AI replies clickable (from clickable-symbols)
+ * 2. Makes symbols in AI replies clickable (from clickable-symbols)
  *
  * Requirements:
  * - pi-vscode-lite extension installed in VS Code
  * - The extension writes connection info to ~/.pi/pi-vscode-bridge/
  */
 
-import type { ExtensionAPI, ExtensionContext, KeybindingsManager } from "@earendil-works/pi-coding-agent";
-import { CustomEditor } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type {
   AutocompleteItem,
   AutocompleteProvider,
   AutocompleteSuggestions,
-  TUI,
-  EditorTheme,
 } from "@earendil-works/pi-tui";
-import { relative, basename, join, isAbsolute, sep } from "node:path";
-import * as fs from "node:fs";
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
+import { relative, basename, isAbsolute, sep } from "node:path";
 import {
   log,
   getActiveBridgeConfig,
   getOpenEditors,
-  showDiffAndWait,
   type OpenEditor,
 } from "./bridge";
 import { registerClickableSymbols } from "./clickable-symbols";
@@ -231,48 +223,6 @@ class VscodeFilesAutocompleteProvider implements AutocompleteProvider {
   }
 }
 
-class VscodeFilesEditor extends CustomEditor {
-  constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager, private readonly cwd: string) {
-    super(tui, theme, keybindings);
-  }
-
-  override setAutocompleteProvider(provider: AutocompleteProvider): void {
-    super.setAutocompleteProvider(new VscodeFilesAutocompleteProvider(provider, this.cwd));
-  }
-}
-
-// ─── edit tool diff 拦截 ──────────────────────────────────
-
-interface PendingEdit {
-  toolCallId: string;
-  filePath: string;
-  /** 第一个 edit 的 base 快照路径（同文件的所有 edit 共享） */
-  baseSnapshotPath: string;
-  /** 是否是同文件队列中的第一个 edit（拥有 base 快照，负责清理） */
-  isFirst: boolean;
-}
-
-/** 同一文件路径的待处理 edit 队列 */
-const fileEditQueues = new Map<string, PendingEdit[]>();
-/** 按 toolCallId 快速查找 */
-const editByCallId = new Map<string, PendingEdit>();
-const diffDir = join(homedir(), ".pi", "diff-cache");
-
-function ensureDiffDir() {
-  if (!fs.existsSync(diffDir)) {
-    fs.mkdirSync(diffDir, { recursive: true });
-  }
-}
-
-/**
- * 会话开始时清空队列，防止上一个会话的残留状态影响新会话。
- * （正常情况下会话结束时会自然清空，但异常退出可能留下残余。）
- */
-function resetDiffState() {
-  fileEditQueues.clear();
-  editByCallId.clear();
-}
-
 // ─── 主入口 ───────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
@@ -280,14 +230,11 @@ export default function (pi: ExtensionAPI) {
   let bridgeAvailable = false;
 
   // 注册 clickable-symbols 功能
-  const symbols = registerClickableSymbols(pi);
+  registerClickableSymbols(pi);
 
   pi.on("session_start", async (_event, ctx) => {
     log("session_start: checking VS Code bridge...");
     console.log("[pi-vscode-files] Session started, checking VS Code bridge...");
-
-    // 清空上一个会话的 diff 状态
-    resetDiffState();
 
     const activeConfig = await getActiveBridgeConfig();
     bridgeAvailable = !!activeConfig;
@@ -376,175 +323,5 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify("Bridge file exists but connection failed. Is VS Code running?", "warning");
       }
     },
-  });
-
-  // /vscode-diff 命令
-  pi.registerCommand("vscode-diff", {
-    description: "Open diff in VS Code and wait for accept/reject. Usage: /vscode-diff <file1> <file2>",
-    handler: async (args, ctx) => {
-      const config = await getActiveBridgeConfig();
-      if (!config) {
-        ctx.ui.notify("VS Code bridge not available. Install pi-vscode-lite extension.", "error");
-        return;
-      }
-
-      const parts = args.split(",").map((s: string) => s.trim().replace(/^["']|["']$/g, ""));
-      let file1: string | undefined;
-      let file2: string | undefined;
-
-      if (parts.length === 2) {
-        file1 = parts[0];
-        file2 = parts[1];
-      } else {
-        const words = args.split(/\s+/);
-        if (words.length >= 2) {
-          file1 = words.slice(0, -1).join(" ").replace(/^["']|["']$/g, "");
-          file2 = words[words.length - 1].replace(/^["']|["']$/g, "");
-        }
-      }
-
-      if (!file1 || !file2) {
-        ctx.ui.notify("Usage: /vscode-diff <file1> <file2> - provide two file paths", "error");
-        return;
-      }
-
-      if (!isAbsolute(file1)) file1 = join(ctx.cwd, file1);
-      if (!isAbsolute(file2)) file2 = join(ctx.cwd, file2);
-
-      if (!existsSync(file1)) {
-        ctx.ui.notify(`File not found: ${file1}`, "error");
-        return;
-      }
-      if (!existsSync(file2)) {
-        ctx.ui.notify(`File not found: ${file2}`, "error");
-        return;
-      }
-
-      ctx.ui.notify("Opening diff in VS Code...", "info");
-
-      const result = await showDiffAndWait(file1, file2);
-
-      if (result === null) {
-        ctx.ui.notify("Failed to connect to VS Code bridge.", "error");
-      } else if (result.timedOut) {
-        ctx.ui.notify("⏰ Timed out waiting for your decision.", "warning");
-      } else if (result.accepted) {
-        ctx.ui.notify("✅ Changes accepted!", "success");
-      } else {
-        ctx.ui.notify("❌ Changes rejected.", "info");
-      }
-    },
-  });
-
-  // edit tool 拦截：在 VS Code 中展示 diff
-  //
-  // 并发 edit 同文件的处理策略：
-  //   - 同一文件的多个 edit 共享最先创建的 base 快照
-  //   - 非最后一个 edit 的 tool_result 跳过 diff 审核
-  //   - 最后一个 edit 的 tool_result 展示合并 diff（base → 当前）
-  //   - 串行场景（常见）不受影响：队列始终只有一个条目
-  //
-  pi.on("tool_call", async (event, ctx) => {
-    if (event.toolName !== "edit") return;
-
-    let filePath: string = event.input?.path;
-    if (!filePath) return;
-    if (!isAbsolute(filePath)) filePath = join(ctx.cwd, filePath);
-    if (!fs.existsSync(filePath)) return;
-
-    ensureDiffDir();
-
-    let queue = fileEditQueues.get(filePath);
-    const isFirst = !queue || queue.length === 0;
-    let baseSnapshotPath: string;
-
-    if (isFirst) {
-      // 第一个 edit：创建 base 快照
-      const base = basename(filePath);
-      baseSnapshotPath = join(diffDir, `${base}.before.${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
-      fs.copyFileSync(filePath, baseSnapshotPath);
-      if (!queue) {
-        queue = [];
-        fileEditQueues.set(filePath, queue);
-      }
-    } else {
-      // 后续 edit：复用第一个 edit 的 base 快照
-      baseSnapshotPath = queue![0]!.baseSnapshotPath;
-    }
-
-    const edit: PendingEdit = {
-      toolCallId: event.toolCallId,
-      filePath,
-      baseSnapshotPath,
-      isFirst,
-    };
-    queue!.push(edit);
-    editByCallId.set(event.toolCallId, edit);
-  });
-
-  pi.on("tool_result", async (event, ctx) => {
-    const edit = editByCallId.get(event.toolCallId);
-    if (!edit) return;
-    editByCallId.delete(event.toolCallId);
-
-    const queue = fileEditQueues.get(edit.filePath);
-    if (!queue) return;
-
-    // 从队列中移除当前 edit
-    const idx = queue.indexOf(edit);
-    if (idx >= 0) queue.splice(idx, 1);
-
-    // 如果还有其他同文件 edit 未完成，跳过 diff 审核
-    // 最后一个 edit 的 tool_result 会展示合并 diff
-    if (queue.length > 0) {
-      return;
-    }
-
-    // 当前是最后一个（或唯一的）edit：清理队列并展示合并 diff
-    fileEditQueues.delete(edit.filePath);
-
-    const { baseSnapshotPath, filePath } = edit;
-
-    try {
-      const original = fs.readFileSync(baseSnapshotPath, "utf-8");
-      const modified = fs.readFileSync(filePath, "utf-8");
-
-      if (original === modified) {
-        try { fs.unlinkSync(baseSnapshotPath); } catch {}
-        return;
-      }
-
-      const config = await getActiveBridgeConfig();
-      if (config) {
-        ctx.ui.notify("📋 Review changes in VS Code...", "info");
-
-        const result = await showDiffAndWait(baseSnapshotPath, filePath);
-
-        if (result && !result.accepted && !result.timedOut) {
-          ctx.ui.notify("❌ Changes rejected, file restored.", "info");
-          fs.writeFileSync(filePath, original, "utf-8");
-          try { fs.unlinkSync(baseSnapshotPath); } catch {}
-          ctx.abort();
-          return {
-            isError: true,
-            content: [{ type: "text", text: "❌ Changes rejected by user. All changes to this file were reverted. Agent stopped." }],
-          };
-        } else if (result && result.autoAccepted) {
-          ctx.ui.notify("⚠️ No VS Code window has this file's workspace. Changes applied without review.", "warning");
-        } else if (result && (result.accepted || result.timedOut)) {
-          if (result.timedOut) {
-            ctx.ui.notify("⏰ Diff timed out, changes kept.", "warning");
-          } else {
-            ctx.ui.notify("✅ Changes accepted.", "success");
-          }
-        }
-      }
-
-      setTimeout(() => {
-        try { fs.unlinkSync(baseSnapshotPath); } catch {}
-      }, 5000);
-    } catch (e) {
-      try { fs.unlinkSync(baseSnapshotPath); } catch {}
-    }
   });
 }
