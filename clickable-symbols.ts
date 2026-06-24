@@ -1,30 +1,19 @@
 /**
- * clickable-symbols.ts — symbol link renderer
+ * clickable-symbols.ts — VS Code jump link renderer
  *
- * 扫描 VS Code 当前打开文件中的函数/类定义，在 pi 回复中将符号名变成可点击链接，
- * 直接跳转到定义行。排除代码块、表格行，以及 .py/.ts 等看起来像文件名的字符串。
+ * 不再识别/索引函数或类等符号；仅在 pi 回复和 edit 工具结果中为 diff 追加
+ * 可点击的 VS Code 跳转链接。
  *
  * 命令：
- *   /symbols-reindex  — 手动重建索引
- *   /symbols-toggle   — 开关 clickable 链接渲染
- *   /symbols-stats    — 查看索引统计和开关状态
+ *   /symbols-toggle — 开关 clickable 链接渲染
+ *   /symbols-stats  — 查看开关状态
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { readFileSync, existsSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { resolve, basename } from "node:path";
 import { getOpenEditors } from "./bridge";
-
-// ─── 类型 ────────────────────────────────────────────────
-
-export interface SymbolDef {
-  file: string;
-  line: number;
-  kind: string;
-}
-
-export type SymbolIndex = Map<string, SymbolDef[]>;
 
 // ─── 工具 ────────────────────────────────────────────────
 
@@ -39,122 +28,6 @@ function vscodeUri(absPath: string, line: number): string {
     .map((p) => encodeURIComponent(p))
     .join("/");
   return `vscode://file/${encoded}:${line}`;
-}
-
-function escapeRegex(str: string): string {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function looksLikeFilePath(name: string): boolean {
-  if (/\.(py|tsx?|jsx?|java|go|rs|cpp|c|h|hpp|cs|swift|kt|rb|php)$/i.test(name)) return true;
-  if (/[/\\]/.test(name)) return true;
-  return false;
-}
-
-// ─── 按语言提取符号 ───────────────────────────────────────
-
-interface LangConf {
-  re: RegExp;
-  kindOf: (g: number) => string;
-}
-
-function lang(...patterns: [string, string][]): LangConf {
-  const kinds = patterns.map(([, k]) => k);
-  return {
-    re: new RegExp(patterns.map(([p]) => p).join("|"), "gm"),
-    kindOf: (g) => kinds[g - 1] ?? "sym",
-  };
-}
-
-const LANGS: Record<string, LangConf> = {
-  typescript: lang(
-    ["(?:^|\\s)(?:export\\s+)?(?:async\\s+)?function\\s+(\\w+)", "fn"],
-    ["(?:^|\\s)(?:export\\s+)?(?:async\\s+)?(?:const|let|var)\\s+(\\w+)\\s*=", "const"],
-    ["(?:^|\\s)(?:export\\s+)?(?:abstract\\s+)?class\\s+(\\w+)", "class"],
-    ["(?:^|\\s)(?:export\\s+)?interface\\s+(\\w+)", "interface"],
-    ["(?:^|\\s)(?:export\\s+)?type\\s+(\\w+)", "type"],
-    ["(?:^|\\s)(?:export\\s+)?enum\\s+(\\w+)", "enum"],
-  ),
-  javascript: lang(
-    ["(?:^|\\s)(?:export\\s+)?(?:async\\s+)?function\\s+(\\w+)", "fn"],
-    ["(?:^|\\s)(?:export\\s+)?(?:async\\s+)?(?:const|let|var)\\s+(\\w+)\\s*=", "const"],
-    ["(?:^|\\s)(?:export\\s+)?class\\s+(\\w+)", "class"],
-  ),
-  python: lang(
-    ["(?:^|\\s)(?:async\\s+)?def\\s+(\\w+)", "fn"],
-    ["(?:^|\\s)class\\s+(\\w+)", "class"],
-  ),
-  rust: lang(
-    ["(?:^|\\s)(?:pub(?:\\s*\\([^)]*\\))?\\s+)?fn\\s+(\\w+)", "fn"],
-    ["(?:^|\\s)(?:pub\\s+)?struct\\s+(\\w+)", "struct"],
-    ["(?:^|\\s)(?:pub\\s+)?trait\\s+(\\w+)", "trait"],
-    ["(?:^|\\s)(?:pub\\s+)?enum\\s+(\\w+)", "enum"],
-  ),
-  go: lang(
-    ["func\\s+(?:\\([^)]*\\)\\s+)?(\\w+)", "func"],
-    ["type\\s+(\\w+)\\s+struct", "type"],
-  ),
-  java: lang(
-    ["(?:public|private|protected)\\s+(?:static\\s+)?(?:final\\s+)?\\w+(?:<[^>]+>)?\\s+(\\w+)\\s*\\(", "method"],
-    ["(?:public|private|protected)?\\s+(?:abstract\\s+)?class\\s+(\\w+)", "class"],
-    ["(?:public|private|protected)?\\s+interface\\s+(\\w+)", "interface"],
-  ),
-};
-
-const SKIP_WORDS = new Set([
-  "the", "and", "for", "not", "but", "are", "all", "can", "had", "has", "was", "were",
-  "will", "with", "from", "have", "this", "that", "what", "when", "where", "which",
-  "they", "them", "then", "than", "some", "get", "set", "let", "var", "new", "try",
-  "end", "use", "now", "add", "run", "put", "old", "see", "own", "big", "few", "key", "all",
-]);
-
-function ok(name: string): boolean {
-  if (name.length < 2) return false;
-  if (SKIP_WORDS.has(name.toLowerCase())) return false;
-  if (looksLikeFilePath(name)) return false;
-  return true;
-}
-
-// ─── 符号提取 ─────────────────────────────────────────────
-
-function extractSymbols(filePath: string, langId: string): { name: string; def: SymbolDef }[] {
-  const conf = LANGS[langId];
-  if (!conf) return [];
-  let content: string;
-  try { content = readFileSync(filePath, "utf-8"); } catch { return []; }
-  const out: { name: string; def: SymbolDef }[] = [];
-  conf.re.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = conf.re.exec(content)) !== null) {
-    const lineNum = (content.slice(0, m.index).match(/\n/g) || []).length + 1;
-    for (let i = 1; i < m.length; i++) {
-      const name = m[i];
-      if (!name || !ok(name)) continue;
-      out.push({ name, def: { file: filePath, line: lineNum, kind: conf.kindOf(i) } });
-    }
-  }
-  return out;
-}
-
-// ─── 构建索引 ─────────────────────────────────────────────
-
-async function buildIndex(): Promise<{ index: SymbolIndex; files: number; symbols: number }> {
-  const index: SymbolIndex = new Map();
-  const editors = await getOpenEditors();
-  let fileCount = 0, symCount = 0;
-  for (const editor of editors) {
-    if (!existsSync(editor.filePath)) continue;
-    const entries = extractSymbols(editor.filePath, editor.languageId);
-    if (entries.length === 0) continue;
-    fileCount++;
-    for (const { name, def } of entries) {
-      const list = index.get(name);
-      if (list) list.push(def);
-      else index.set(name, [def]);
-      symCount++;
-    }
-  }
-  return { index, files: fileCount, symbols: symCount };
 }
 
 // ─── diff 行号链接 ─────────────────────────────────────────
@@ -290,72 +163,10 @@ function appendDiffFileLinks(text: string, openFiles: string[]): string {
   });
 }
 
-// ─── 只在安全区域替换 ─────────────────────────────────────
-
-function replaceSafeRegions(
-  text: string,
-  names: string[],
-  index: SymbolIndex,
-  openFiles: string[]
-): string {
+function replaceDiffRegions(text: string, openFiles: string[]): string {
   let result = replaceDiffLinks(text, openFiles);
   result = appendDiffFileLinks(result, openFiles);
-
-  if (names.length === 0) return result;
-
-  const parts = result.split(/(```[\s\S]*?```)/g);
-  return parts
-    .map((part, i) => {
-      if (i % 2 === 1) return part;
-
-      let replaced = part.split("\n").map((line) => {
-        if (/^\s*\|[^|]+\|/.test(line)) return line;
-
-        interface Match {
-          start: number;
-          end: number;
-          replacement: string;
-          len: number;
-        }
-        const matches: Match[] = [];
-        for (const name of names) {
-          const defs = index.get(name)!;
-          const def = defs[0]!;
-          const uri = vscodeUri(def.file, def.line);
-          const re = new RegExp(`\\b${escapeRegex(name)}\\b`, "g");
-          let m: RegExpExecArray | null;
-          while ((m = re.exec(line)) !== null) {
-            matches.push({
-              start: m.index,
-              end: m.index + name.length,
-              replacement: osc8(uri, name),
-              len: name.length,
-            });
-          }
-        }
-        if (matches.length === 0) return line;
-
-        matches.sort((a, b) => a.start - b.start || b.len - a.len);
-        const kept: Match[] = [];
-        for (const m of matches) {
-          const last = kept[kept.length - 1];
-          if (last && m.start < last.end) {
-            if (m.len > last.len) kept[kept.length - 1] = m;
-          } else {
-            kept.push(m);
-          }
-        }
-
-        kept.sort((a, b) => b.start - a.start);
-        for (const m of kept) {
-          line = line.slice(0, m.start) + m.replacement + line.slice(m.end);
-        }
-        return line;
-      }).join("\n");
-
-      return replaced;
-    })
-    .join("");
+  return result;
 }
 
 // ─── 注册到 pi ───────────────────────────────────────────
@@ -364,37 +175,26 @@ export function registerClickableSymbols(pi: ExtensionAPI): {
   /** 获取当前打开文件路径列表（供外部 diff 匹配使用） */
   getOpenFilePaths: () => string[];
 } {
-  let symbolIndex: SymbolIndex = new Map();
   let openFilePaths: string[] = [];
-  let ready = false;
   let enabled = true;
-  let stats = { files: 0, symbols: 0 };
-  let prevSnapshot = "";
+  let currentCtx: any = undefined;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let prevSnapshot = "";
   const POLL_INTERVAL_MS = 5000;
 
   function updateStatus(ctx?: any) {
     try {
       if (!ctx?.ui?.setStatus) return;
-      if (!ready || stats.symbols === 0) {
-        ctx.ui.setStatus("clickable-symbols", undefined);
-        return;
-      }
       const flag = enabled ? "●" : "○";
-      ctx.ui.setStatus("clickable-symbols", `${flag} ${stats.symbols} sym · ${stats.files} files`);
+      ctx.ui.setStatus("clickable-symbols", `${flag} diff links`);
     } catch {}
   }
 
-  async function refresh(notify?: (msg: string, level: string) => void, ctx?: any) {
+  async function refreshOpenFiles(): Promise<void> {
     try {
-      const result = await buildIndex();
-      symbolIndex = result.index;
-      stats = { files: result.files, symbols: result.symbols };
-      ready = result.files > 0;
       const editors = await getOpenEditors();
       openFilePaths = editors.map((e) => e.filePath);
-      updateStatus(ctx);
-      notify?.(`${stats.symbols} symbols · ${stats.files} files`, ready ? "success" : "info");
+      updateStatus(currentCtx);
     } catch (e: any) {
       console.error("[clickable-symbols]", e.message);
     }
@@ -410,13 +210,11 @@ export function registerClickableSymbols(pi: ExtensionAPI): {
     } catch { return ""; }
   }
 
-  let currentCtx: any = undefined;
-
   async function poll(): Promise<void> {
     const snap = await makeSnapshot();
     if (snap && snap !== prevSnapshot) {
       prevSnapshot = snap;
-      await refresh(undefined, currentCtx);
+      await refreshOpenFiles();
     }
   }
 
@@ -449,46 +247,30 @@ export function registerClickableSymbols(pi: ExtensionAPI): {
     return { details: { ...details, diff: `${details.diff}\n${link}` } };
   });
 
-  // message_end：符号 + diff 链接替换
-  pi.on("message_end", async (event, _ctx) => {
+  // message_end：仅处理 diff 链接，不再替换符号名
+  pi.on("message_end", async (event) => {
     const role = event.message.role;
     if (role !== "assistant" && role !== "toolResult") return;
     if (!enabled) return;
 
-    const doSymbols = role === "assistant" && ready && symbolIndex.size > 0;
-    const names = doSymbols
-      ? [...symbolIndex.keys()].sort((a, b) => b.length - a.length)
-      : [];
-
     const content = event.message.content.map((block: any) => {
       if (block.type !== "text") return block;
-      return { ...block, text: replaceSafeRegions(block.text, names, symbolIndex, openFilePaths) };
+      return { ...block, text: replaceDiffRegions(block.text, openFilePaths) };
     });
 
     return { message: { ...event.message, content } };
   });
 
-  // 命令
-  pi.registerCommand("symbols-reindex", {
-    description: "Reindex symbols from VS Code open files",
-    handler: async (_args, ctx) => {
-      ctx.ui.notify("Reindexing...", "info");
-      prevSnapshot = await makeSnapshot();
-      await refresh((msg, level) => ctx.ui.notify(msg, level as any), ctx);
-    },
-  });
-
   pi.registerCommand("symbols-stats", {
-    description: "Show symbol index stats",
+    description: "Show clickable diff link status",
     handler: async (_args, ctx) => {
-      if (!ready) { ctx.ui.notify("Not indexed. /symbols-reindex", "info"); return; }
       const flag = enabled ? "● on" : "○ off";
-      ctx.ui.notify(`${flag} · ${stats.symbols} symbols · ${stats.files} files`, "info");
+      ctx.ui.notify(`${flag} · diff jump links only · ${openFilePaths.length} open files`, "info");
     },
   });
 
   pi.registerCommand("symbols-toggle", {
-    description: "Toggle clickable symbols on/off",
+    description: "Toggle clickable diff links on/off",
     handler: async (_args, ctx) => {
       enabled = !enabled;
       updateStatus(ctx);
@@ -497,13 +279,12 @@ export function registerClickableSymbols(pi: ExtensionAPI): {
     },
   });
 
-  // session 生命周期
   pi.on("session_start", async (_event, ctx) => {
     currentCtx = ctx;
 
     setTimeout(async () => {
       prevSnapshot = await makeSnapshot();
-      await refresh((msg) => ctx.ui.notify(`clickable-symbols: ${msg}`, "info"), ctx);
+      await refreshOpenFiles();
       startPolling();
     }, 1500);
   });

@@ -1,7 +1,7 @@
 /**
  * bridge.ts — shared VS Code bridge
  *
- * Shared VS Code bridge utilities used by both @ autocomplete and clickable-symbols.
+ * Shared VS Code bridge utilities used by @ autocomplete and diff jump links.
  */
 
 import { readFileSync, existsSync, readdirSync, appendFileSync } from "node:fs";

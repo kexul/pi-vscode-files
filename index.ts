@@ -3,7 +3,7 @@
  *
  * A pi extension that:
  * 1. Prioritizes VS Code open files in @ autocomplete
- * 2. Makes symbols in AI replies clickable (from clickable-symbols)
+ * 2. Adds clickable VS Code jump links to diffs
  *
  * Requirements:
  * - pi-vscode-lite extension installed in VS Code
@@ -229,7 +229,7 @@ export default function (pi: ExtensionAPI) {
   log("=== pi-vscode-files extension LOADED ===");
   let bridgeAvailable = false;
 
-  // 注册 clickable-symbols 功能
+  // 注册 diff 跳转链接功能
   registerClickableSymbols(pi);
 
   pi.on("session_start", async (_event, ctx) => {

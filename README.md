@@ -1,15 +1,15 @@
 # pi-vscode-files
 
-A [pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) extension that integrates VS Code with pi, providing @ autocomplete and clickable symbols.
+A [pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) extension that integrates VS Code with pi, providing @ autocomplete and clickable diff links.
 
-> **@ autocomplete** — type `@xxx` and VS Code open files appear first. **Clickable symbols** — function/class names in AI replies become clickable links that jump to the definition line.
+> **@ autocomplete** — type `@xxx` and VS Code open files appear first. **Clickable diff links** — diff hunks and edit results get clickable links that jump to VS Code.
 
 ## Features
 
 - **@ autocomplete** — VS Code open files appear at the top of `@` suggestions, with active/dirty files prioritized
 ![screenshot](screenshot-at.png)
 
-- **Clickable symbols** — symbols (functions, classes, etc.) in AI replies become clickable OSC 8 links that open the definition in VS Code. Also makes diff hunk headers clickable and appends jump links after code blocks.
+- **Clickable diff links** — diff hunk headers become clickable OSC 8 links and jump links are appended after diff code blocks/edit results.
 
 ## Commands
 
@@ -17,7 +17,8 @@ A [pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) ext
 |---------|-------------|
 | `/vscode-files` | Show VS Code open files |
 | `/vscode-status` | Check VS Code bridge status |
-| `/symbols-toggle` | Toggle clickable symbols on/off |
+| `/symbols-toggle` | Toggle clickable diff links on/off |
+| `/symbols-stats` | Show clickable diff link status |
 
 ## File Structure
 
@@ -25,7 +26,7 @@ A [pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) ext
 pi-vscode-files/
 ├── index.ts              # Main entry: @ autocomplete and commands
 ├── bridge.ts             # Shared VS Code bridge utilities (types, fetch, configs, open editors)
-├── clickable-symbols.ts  # Clickable symbols feature (extraction, OSC8 links, diff jump links)
+├── clickable-symbols.ts  # Clickable diff link feature (OSC8 links, diff jump links)
 ├── README.md
 ├── screenshot-at.png
 ├── screenshot.png

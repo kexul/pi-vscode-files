@@ -1,7 +1,7 @@
 {
   "name": "pi-vscode-files",
   "version": "0.0.2",
-  "description": "Pi extension: VS Code file autocomplete and clickable symbols",
+  "description": "Pi extension: VS Code file autocomplete and clickable diff links",
   "keywords": ["pi-package"],
   "pi": {
     "extensions": ["./index.ts"]
