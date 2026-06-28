@@ -177,24 +177,14 @@ export function registerClickableSymbols(pi: ExtensionAPI): {
 } {
   let openFilePaths: string[] = [];
   let enabled = true;
-  let currentCtx: any = undefined;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let prevSnapshot = "";
   const POLL_INTERVAL_MS = 5000;
-
-  function updateStatus(ctx?: any) {
-    try {
-      if (!ctx?.ui?.setStatus) return;
-      const flag = enabled ? "●" : "○";
-      ctx.ui.setStatus("clickable-symbols", `${flag} diff links`);
-    } catch {}
-  }
 
   async function refreshOpenFiles(): Promise<void> {
     try {
       const editors = await getOpenEditors();
       openFilePaths = editors.map((e) => e.filePath);
-      updateStatus(currentCtx);
     } catch (e: any) {
       console.error("[clickable-symbols]", e.message);
     }
@@ -273,15 +263,12 @@ export function registerClickableSymbols(pi: ExtensionAPI): {
     description: "Toggle clickable diff links on/off",
     handler: async (_args, ctx) => {
       enabled = !enabled;
-      updateStatus(ctx);
       const label = enabled ? "● ON" : "○ OFF";
       ctx.ui.notify(`clickable-symbols: ${label}`, enabled ? "success" : "info");
     },
   });
 
-  pi.on("session_start", async (_event, ctx) => {
-    currentCtx = ctx;
-
+  pi.on("session_start", async () => {
     setTimeout(async () => {
       prevSnapshot = await makeSnapshot();
       await refreshOpenFiles();
@@ -290,7 +277,6 @@ export function registerClickableSymbols(pi: ExtensionAPI): {
   });
 
   pi.on("session_end", () => {
-    currentCtx = undefined;
     stopPolling();
   });
 
