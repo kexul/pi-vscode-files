@@ -25,8 +25,6 @@ A [pi](https://github.com/earendil-works/pi/tree/main/packages/coding-agent) ext
 | `/vscode-status` | Check VS Code bridge status |
 | `/vscode-problems` | Load Problems for the active VS Code editor into the pi editor |
 | `/vscode-problems all` | Load VS Code Problems diagnostics for the current cwd |
-| `/symbols-toggle` | Toggle clickable diff links on/off |
-| `/symbols-stats` | Show clickable diff link status |
 
 ### VS Code commands
 

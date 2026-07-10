@@ -4,9 +4,6 @@
  * 不再识别/索引函数或类等符号；仅在 pi 回复和 edit 工具结果中为 diff 追加
  * 可点击的 VS Code 跳转链接。
  *
- * 命令：
- *   /symbols-toggle — 开关 clickable 链接渲染
- *   /symbols-stats  — 查看开关状态
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -177,7 +174,6 @@ export function registerClickableSymbols(pi: ExtensionAPI): {
   getOpenFilePaths: () => string[];
 } {
   let openFilePaths: string[] = [];
-  let enabled = true;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let prevSnapshot = "";
   const POLL_INTERVAL_MS = 5000;
@@ -220,7 +216,6 @@ export function registerClickableSymbols(pi: ExtensionAPI): {
 
   // edit 工具 diff 追加跳转链接
   pi.on("tool_result", async (event) => {
-    if (!enabled) return;
     if (event.toolName !== "edit") return;
 
     const details = event.details as { diff?: string; firstChangedLine?: number } | undefined;
@@ -242,31 +237,12 @@ export function registerClickableSymbols(pi: ExtensionAPI): {
   pi.on("message_end", async (event) => {
     const role = event.message.role;
     if (role !== "assistant" && role !== "toolResult") return;
-    if (!enabled) return;
-
     const content = event.message.content.map((block: any) => {
       if (block.type !== "text") return block;
       return { ...block, text: replaceDiffRegions(block.text, openFilePaths) };
     });
 
     return { message: { ...event.message, content } };
-  });
-
-  pi.registerCommand("symbols-stats", {
-    description: "Show clickable diff link status",
-    handler: async (_args, ctx) => {
-      const flag = enabled ? "● on" : "○ off";
-      ctx.ui.notify(`${flag} · diff jump links only · ${openFilePaths.length} open files`, "info");
-    },
-  });
-
-  pi.registerCommand("symbols-toggle", {
-    description: "Toggle clickable diff links on/off",
-    handler: async (_args, ctx) => {
-      enabled = !enabled;
-      const label = enabled ? "● ON" : "○ OFF";
-      ctx.ui.notify(`clickable-symbols: ${label}`, enabled ? "success" : "info");
-    },
   });
 
   pi.on("session_start", async () => {
