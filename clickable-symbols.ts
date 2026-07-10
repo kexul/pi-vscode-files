@@ -78,8 +78,9 @@ function replaceDiffLinks(text: string, openFiles: string[]): string {
 
 // ─── diff 结束后追加文件跳转链接 ──────────────────────────
 
-function makeFileLink(absPath: string, line: number, prefix = "🔗"): string {
-  return osc8(vscodeUri(absPath, line), `${prefix} ${basename(absPath)}:${line}`);
+function makeFileLink(absPath: string, line: number, prefix = ""): string {
+  const label = prefix ? `${prefix} ${basename(absPath)}:${line}` : `${basename(absPath)}:${line}`;
+  return osc8(vscodeUri(absPath, line), label);
 }
 
 function uniqueLines(lines: number[]): number[] {
@@ -89,7 +90,7 @@ function uniqueLines(lines: number[]): number[] {
 function makeFileLinks(absPath: string, lines: number[]): string {
   const unique = uniqueLines(lines);
   return unique
-    .map((line, i) => makeFileLink(absPath, line, unique.length > 1 ? `🔗${i + 1}` : "🔗"))
+    .map((line, i) => makeFileLink(absPath, line, unique.length > 1 ? `${i + 1}.` : ""))
     .join("\n");
 }
 
@@ -224,7 +225,7 @@ export function registerClickableSymbols(pi: ExtensionAPI): {
 
     const details = event.details as { diff?: string; firstChangedLine?: number } | undefined;
     if (!details?.diff) return;
-    if (details.diff.includes("🔗")) return;
+    if (details.diff.includes("\x1b]8;;vscode://file/")) return;
 
     const rawPath = (event.input as any)?.path ?? (event.input as any)?.file_path;
     if (typeof rawPath !== "string") return;
