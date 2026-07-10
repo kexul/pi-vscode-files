@@ -1,6 +1,6 @@
 {
   "name": "pi-vscode-files",
-  "version": "0.0.2",
+  "version": "0.0.5",
   "description": "Pi extension: VS Code file autocomplete and clickable diff links",
   "keywords": ["pi-package"],
   "pi": {

@@ -2,12 +2,30 @@
   "name": "pi-vscode-lite",
   "displayName": "Pi VS Code Lite",
   "description": "Lightweight bridge for pi - only provides open files API",
-  "version": "0.0.2",
+  "version": "0.0.5",
   "publisher": "local",
   "engines": {
     "vscode": "^1.80.0"
   },
   "categories": ["Other"],
   "activationEvents": ["*"],
-  "main": "./extension.js"
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "pi-vscode-lite.askSelectionAndSend", "title": "Pi: Ask About Selection and Send" }
+    ],
+    "keybindings": [
+      {
+        "command": "pi-vscode-lite.askSelectionAndSend",
+        "key": "ctrl+alt+p",
+        "mac": "cmd+alt+p",
+        "when": "editorTextFocus"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        { "command": "pi-vscode-lite.askSelectionAndSend", "group": "navigation@89" }
+      ]
+    }
+  }
 }

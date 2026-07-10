@@ -11,14 +11,13 @@ const PID = process.pid;
 const PI_DIR = path.join(process.env.USERPROFILE || process.env.HOME, '.pi');
 const BRIDGE_DIR = path.join(PI_DIR, 'pi-vscode-bridge');
 const BRIDGE_FILE = path.join(BRIDGE_DIR, `${PID}.json`);
+const PROMPT_QUEUE_FILE = path.join(BRIDGE_DIR, 'prompt-queue.jsonl');
 
 // Write this window's bridge config to its own per-PID file.
 // No read-modify-write needed — each window owns its file exclusively.
 function registerBridge(url) {
     try {
-        if (!fs.existsSync(BRIDGE_DIR)) {
-            fs.mkdirSync(BRIDGE_DIR, { recursive: true });
-        }
+        ensureBridgeDir();
         // Write to temp file first, then rename for atomicity
         const tmpFile = BRIDGE_FILE + '.tmp';
         const workspaceFolders = vscode.workspace.workspaceFolders
@@ -46,6 +45,130 @@ function unregisterBridge() {
     } catch {
         // Silently ignore cleanup errors
     }
+}
+
+function ensureBridgeDir() {
+    if (!fs.existsSync(BRIDGE_DIR)) {
+        fs.mkdirSync(BRIDGE_DIR, { recursive: true });
+    }
+}
+
+function severityToString(severity) {
+    switch (severity) {
+        case vscode.DiagnosticSeverity.Error: return 'error';
+        case vscode.DiagnosticSeverity.Warning: return 'warning';
+        case vscode.DiagnosticSeverity.Information: return 'information';
+        case vscode.DiagnosticSeverity.Hint: return 'hint';
+        default: return 'unknown';
+    }
+}
+
+function diagnosticCodeToString(code) {
+    if (code === undefined || code === null) return undefined;
+    if (typeof code === 'object') return code.value ?? JSON.stringify(code);
+    return code;
+}
+
+function getDiagnostics() {
+    const out = [];
+    for (const [uri, diagnostics] of vscode.languages.getDiagnostics()) {
+        if (uri.scheme !== 'file' && uri.scheme !== 'vscode-remote') continue;
+        for (const diagnostic of diagnostics) {
+            out.push({
+                filePath: uri.fsPath,
+                line: diagnostic.range.start.line + 1,
+                column: diagnostic.range.start.character + 1,
+                endLine: diagnostic.range.end.line + 1,
+                endColumn: diagnostic.range.end.character + 1,
+                severity: severityToString(diagnostic.severity),
+                message: diagnostic.message,
+                source: diagnostic.source,
+                code: diagnosticCodeToString(diagnostic.code)
+            });
+        }
+    }
+    return out;
+}
+
+function getWorkspaceRelativePath(filePath) {
+    const folders = vscode.workspace.workspaceFolders || [];
+    let best = null;
+    for (const folder of folders) {
+        const root = folder.uri.fsPath;
+        const rel = path.relative(root, filePath);
+        if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) {
+            if (!best || rel.length < best.length) best = rel;
+        }
+    }
+    return best || filePath;
+}
+
+function escapePromptPath(filePath) {
+    const normalized = getWorkspaceRelativePath(filePath).replace(/\\/g, '/');
+    return normalized.includes(' ') ? `@"${normalized}"` : `@${normalized}`;
+}
+
+function selectionRangeText(selection) {
+    const startLine = selection.start.line + 1;
+    const endLine = selection.end.line + 1;
+    return startLine === endLine ? `line ${startLine}` : `lines ${startLine}-${endLine}`;
+}
+
+function getActiveEditorContext() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return null;
+
+    const document = editor.document;
+    const fileRef = escapePromptPath(document.uri.fsPath);
+    const selection = editor.selection;
+    const selectedText = document.getText(selection);
+    const hasSelection = !selection.isEmpty && selectedText.trim() !== '';
+    const range = selectionRangeText(selection);
+    return { editor, document, fileRef, selectedText, hasSelection, range };
+}
+
+function enqueuePiPrompt(text, action = 'sendUserMessage') {
+    ensureBridgeDir();
+    const entry = {
+        id: `${PID}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`,
+        source: 'vscode',
+        action,
+        text,
+        createdAt: Date.now()
+    };
+    fs.appendFileSync(PROMPT_QUEUE_FILE, JSON.stringify(entry) + '\n');
+}
+
+function buildAskSelectionPrompt(userText) {
+    const context = getActiveEditorContext();
+    if (!context) return null;
+
+    const { document, fileRef, selectedText, hasSelection, range } = context;
+    const codeText = hasSelection ? selectedText : document.lineAt(context.editor.selection.active.line).text;
+    const codeLabel = hasSelection ? `selected code in ${fileRef} (${range})` : `current line in ${fileRef} (${range})`;
+    return `${userText}\n\nContext: ${codeLabel}\n\n\`\`\`${document.languageId}\n${codeText}\n\`\`\`\n`;
+}
+
+async function askSelectionAndSend() {
+    const userText = await vscode.window.showInputBox({
+        title: 'Ask pi about selection',
+        prompt: 'Your message will be sent to pi together with the selected code.',
+        placeHolder: 'e.g. Explain this, fix the bug, add tests...',
+        ignoreFocusOut: true
+    });
+    if (userText === undefined) return;
+    if (userText.trim() === '') {
+        vscode.window.showWarningMessage('Pi: message is empty.');
+        return;
+    }
+
+    const text = buildAskSelectionPrompt(userText.trim());
+    if (!text) {
+        vscode.window.showWarningMessage('Pi: no active editor.');
+        return;
+    }
+    enqueuePiPrompt(text, 'sendUserMessage');
+    vscode.window.showInformationMessage('Sent message to pi.');
 }
 
 function getOpenEditors() {
@@ -126,6 +249,9 @@ function activate(context) {
         } else if (req.url === '/open-editors' && req.method === 'GET') {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(getOpenEditors()));
+        } else if (req.url === '/diagnostics' && req.method === 'GET') {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify(getDiagnostics()));
         } else if (req.url === '/workspace-folders' && req.method === 'GET') {
             const folders = vscode.workspace.workspaceFolders?.map(f => f.uri.fsPath) || [];
             res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -144,6 +270,8 @@ function activate(context) {
 
         console.log(`Pi VS Code Lite bridge running on port ${port} (PID: ${PID})`);
     });
+
+    context.subscriptions.push(vscode.commands.registerCommand('pi-vscode-lite.askSelectionAndSend', askSelectionAndSend));
 
     // Clean up on deactivate: remove only this window's entry
     context.subscriptions.push({

@@ -21,9 +21,11 @@ import {
   log,
   getActiveBridgeConfig,
   getOpenEditors,
+  getDiagnostics,
   type OpenEditor,
 } from "./bridge";
 import { registerClickableSymbols } from "./clickable-symbols";
+import { registerVscodePromptQueue } from "./vscode-prompt-queue";
 
 // ─── @ autocomplete ──────────────────────────────────────
 
@@ -231,6 +233,7 @@ export default function (pi: ExtensionAPI) {
 
   // 注册 diff 跳转链接功能
   registerClickableSymbols(pi);
+  registerVscodePromptQueue(pi);
 
   pi.on("session_start", async (_event, ctx) => {
     log("session_start: checking VS Code bridge...");
@@ -303,6 +306,39 @@ export default function (pi: ExtensionAPI) {
           ctx.ui.setEditorText(`@${relPath} `);
         }
       }
+    },
+  });
+
+  pi.registerCommand("vscode-problems", {
+    description: "Show VS Code Problems diagnostics",
+    handler: async (args, ctx) => {
+      const diagnostics = await getDiagnostics();
+      if (diagnostics.length === 0) {
+        ctx.ui.notify("No VS Code problems found.", "success");
+        return;
+      }
+
+      const showAll = args.trim() === "all";
+      let items = diagnostics.filter((d) => isInsideCwd(d.filePath, ctx.cwd));
+      if (!showAll) {
+        const active = (await getOpenEditors()).find((e) => e.isActive);
+        if (active) items = items.filter((d) => d.filePath === active.filePath);
+      }
+
+      if (items.length === 0) {
+        ctx.ui.notify(showAll ? "No VS Code problems in current cwd." : "No VS Code problems in active editor.", "success");
+        return;
+      }
+
+      const text = items.slice(0, 100).map((d) => {
+        const relPath = relative(ctx.cwd, d.filePath).replace(/\\/g, "/");
+        const code = d.code !== undefined ? ` ${d.code}` : "";
+        const source = d.source ? `${d.source}${code}: ` : "";
+        return `${relPath}:${d.line}:${d.column} ${d.severity} ${source}${d.message}`;
+      }).join("\n");
+
+      ctx.ui.setEditorText(`${text}\n`);
+      ctx.ui.notify(`Loaded ${items.length} VS Code problem(s) into editor`, "info");
     },
   });
 

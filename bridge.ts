@@ -33,6 +33,18 @@ export interface OpenEditor {
   isActive: boolean;
 }
 
+export interface VscodeDiagnostic {
+  filePath: string;
+  line: number;
+  column: number;
+  endLine: number;
+  endColumn: number;
+  severity: "error" | "warning" | "information" | "hint";
+  message: string;
+  source?: string;
+  code?: string | number;
+}
+
 // ─── fetch 超时 ──────────────────────────────────────────
 
 export function fetchWithTimeout(
@@ -143,6 +155,28 @@ export async function getActiveBridgeConfig(): Promise<BridgeConfig | null> {
   return active[0] ?? null;
 }
 
+async function fetchJsonFromActiveBridges<T>(endpoint: string, timeoutMs = 3000): Promise<T[]> {
+  const configs = await getActiveBridgeConfigs();
+  if (configs.length === 0) return [];
+
+  const results = await Promise.allSettled(
+    configs.map(async (config) => {
+      try {
+        const response = await fetchWithTimeout(`${config.url}${endpoint}`, {
+          method: "GET",
+          headers: { "X-Token": config.token },
+        }, timeoutMs);
+        if (!response.ok) return [];
+        return (await response.json()) as T[];
+      } catch {
+        return [];
+      }
+    })
+  );
+
+  return results.flatMap((result) => result.status === "fulfilled" ? result.value : []);
+}
+
 // ─── 获取打开的编辑器 ─────────────────────────────────────
 
 export async function getOpenEditors(): Promise<OpenEditor[]> {
@@ -181,5 +215,9 @@ export async function getOpenEditors(): Promise<OpenEditor[]> {
   }
 
   return [...seen.values()];
+}
+
+export async function getDiagnostics(): Promise<VscodeDiagnostic[]> {
+  return fetchJsonFromActiveBridges<VscodeDiagnostic>("/diagnostics", 3000);
 }
 
